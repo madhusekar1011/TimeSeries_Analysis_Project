@@ -1,0 +1,289 @@
+---
+title: "Final Project Part 2"
+author: "Madhumathi_Sekar, Thy Kieu, & Madhuri Patibandla"
+date: "2025-04-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fpp3)
+library(readxl)
+library(ggplot2)
+library(forecast)
+library(scales)
+library(tsibble)
+library(seasonal)
+```
+
+# Dataset overview
+
+```{r Load_dataset}
+df_2009_2010 <- read_excel("online_retail_II.xlsx", sheet = 1)
+df_2010_2011 <- read_excel("online_retail_II.xlsx", sheet = 2)
+
+# combine both the datasets
+df <- bind_rows(df_2009_2010,df_2010_2011)
+
+df
+```
+
+# Exploratory Data Analysis
+
+> Check first few rows
+
+```{r}
+head(df)
+```
+
+> Check summary statistics
+
+```{r}
+summary(df)
+```
+
+> Check structure of data
+
+```{r}
+str(df)
+```
+
+> Check Missing Values Count
+
+```{r}
+colSums(is.na(df))
+```
+
+
+> Rename the column CustomerID
+
+```{r}
+colnames(df) <- gsub(" ","",colnames(df))
+
+colnames(df)
+```
+Since we have more missing CustomerID ,replacing them with "Unknown"
+
+```{r}
+df <- df %>%
+  mutate(CustomerID = ifelse(is.na(CustomerID), "Unknown", as.character(CustomerID)))
+```
+
+
+> Remove Duplicates
+
+```{r}
+df <- df |> distinct()
+```
+
+> Transformations
+
+```{r}
+df_Transformation <- df |>
+filter(Country=="United Kingdom") |>
+mutate(Month = month.abb[month(InvoiceDate)])|>
+mutate(Total_Price = sum(Quantity * Price))
+df_Transformation
+```
+This transformation was done to calculate the total revenue. 
+
+> Daily Sales Trend
+
+```{r}
+df_daily_sales <- df_Transformation |>
+  group_by(InvoiceDate) |>
+  summarise(Total_Sales = sum(Total_Price, na.rm = TRUE))
+
+ggplot(df_daily_sales, aes(x = InvoiceDate, y = Total_Sales)) +
+  geom_line(color = "blue") +
+  labs(title = "Daily Sales Trend of UK (2009-2011)", x = "Date", y = "Total Sales") +
+  theme_minimal()
+```
+Looking at the daily sales trend from 2009 to 2011, there is a general upward trend. There seems to be higher peaks in the later periods. Seasonality-wise, there are recurring peaks and dips at regular intervals. There a spikes around the end of the year possibly due to seasonal effects. Overall, it is not stationary. 
+
+> Monthly Sales Trend
+
+```{r}
+df_monthly_sales <- df_Transformation |>
+  mutate(YearMonth = floor_date(InvoiceDate, "month")) |>
+  group_by(YearMonth) |>
+  summarise(Total_Sales = sum(Total_Price, na.rm = TRUE))
+
+# Plot Monthly Sales Trend
+ggplot(df_monthly_sales, aes(x = YearMonth, y = Total_Sales)) +
+  geom_line(color = "purple") +
+  labs(title = "Monthly Sales Trend of UK (2009-2011)", x = "Month", y = "Total Sales") +
+  theme_minimal()
+```
+Looking at the monthly sale trends, from the beginning to the end of each year, there is an upward trend. Again, it also shows yearly seasonality where it spikes around the end of the year(possibly due to holiday sales). This graph is not stationary. 
+
+> Yearly Sales Trend
+
+```{r}
+df_yearly_sales <- df_Transformation |>
+  mutate(Year = year(InvoiceDate)) |> 
+  group_by(Year) |>
+  summarise(Total_Sales = sum(Total_Price, na.rm = TRUE))
+
+
+ggplot(df_yearly_sales, aes(x = factor(Year), y = Total_Sales, group = 1)) +
+  geom_line(color = "purple", size = 1) +  
+  geom_point(size = 3, color = "darkred") +  
+  labs(title = "Yearly Sales Trend of UK (2009-2011)", x = "Year", y = "Total Sales") +
+  theme_minimal()
+
+```
+Looking at the yearly sales trend, there is an increase from 2009 to 2010, and then a small decrease from 2010 to 2011. Seasonality and stationary can't be assessed. 
+
+```{r}
+df_monthly_sales_MY <- df_Transformation %>%
+  mutate(YearMonth = yearmonth(InvoiceDate)) %>%  # Convert date to Year-Month
+  group_by(YearMonth) %>%
+  summarise(Total_Sales = sum(Total_Price, na.rm = TRUE), .groups = "drop")
+
+# Converting to tsibble
+df_UK_ts <- as_tsibble(df_monthly_sales_MY, index = YearMonth)
+```
+
+# Time Series Visualization
+```{r}
+#transformation with invoicedate to a date format 
+df$InvoiceDate <- as_datetime(df$InvoiceDate)
+df_data <- df %>%
+  mutate(Date = as.Date(InvoiceDate)) %>%
+  group_by(Date) %>%
+  summarise(TotalPrice = sum(Quantity * Price, na.rm = TRUE))
+
+#time series
+ts <- ts(df_data$TotalPrice, start=c(2009,12), frequency=12)
+
+#seasonal plot
+ggseasonplot(ts, main="Seasonal Plot of UK Sales", year.labels=TRUE)
+
+#ACF plot
+acf(ts, main = "Autocorrelation Function(ACF) of UK Sales")
+
+#PACF plot
+pacf(ts, main="Partial Autocorrelation Function (PACF) of UK Sales")
+```
+
+```{r}
+#bar plot
+ggplot(df_monthly_sales, aes(x = YearMonth, y = Total_Sales)) +
+  geom_bar(stat = "identity", fill = "blue") 
+  labs(title = "Bar Plot of Monthly Sales Trend of UK (2009-2011)", x = "Month", y = "Total Sales")
+```
+
+# Time Series Decomposition
+
+> Classical Decomposition(Additive)
+
+```{r}
+decomp <- df_UK_ts %>%
+  model(classical_decomposition(Total_Sales, type = "additive")) %>%
+  components()
+
+# Plot decomposition
+autoplot(decomp) +
+  labs(title = "Classical Decomposition of UK Sales (2009-2011)")
+```
+The classical decomposition to the total_sales variable was executed using the "additive" type because the seasonal variations were constant over time. The trend line is increasing with a slight decline around the end, so there is a non-stationary trend in sales. The seasonal component shows strong seasonality due to the recurring patterns. 
+
+> STL Decomposition
+
+```{r}
+stl_decomp <- df_UK_ts %>%
+  model(STL(Total_Sales ~ season(window = "periodic"))) %>%
+  components()
+
+# Plot STL Decomposition
+autoplot(stl_decomp) +
+  labs(title = "STL Decomposition of UK Sales (2009-2011)")
+```
+The STL decomposition was used because it allows for changing seasonal patterns. It shows an overall downward trend. There seems to be signs of seasonality due to the recurring patterns. The remainder/residuals show the possible noise and irregularities. 
+
+Overall, STL decomposition seems to be the better model because it was able to adapt to the changing seasonality. The residuals seems to be closer to the true noise as well. Another benefit of using this model is that it is resistant to any possible outliers. 
+
+> Predictions
+
+```{r ETS (Exponential Smoothing)}
+# ETS Model
+ets_model <- df_UK_ts %>%
+  model(ETS(Total_Sales))
+
+# Forecast for next 12 months
+ets_forecast <- forecast(ets_model, h = 12)
+
+# Plot
+autoplot(ets_forecast, df_UK_ts) +
+  labs(title = "ETS Forecast for UK Sales (Next 12 Months)", y = "Total Sales")
+```
+
+```{r ARIMA}
+# Fit ARIMA Model
+arima_model <- df_UK_ts %>%
+  model(ARIMA(Total_Sales))
+
+# Forecast for next 12 months
+arima_forecast <- forecast(arima_model, h = 12)
+
+# Plot
+autoplot(arima_forecast, df_UK_ts) +
+  labs(title = "ARIMA Forecast for UK Sales (Next 12 Months)", y = "Total Sales")
+```
+
+```{r Compare Models }
+# Compare both ETS and ARIMA
+model_compare <- df_UK_ts %>%
+  model(
+    ETS = ETS(Total_Sales),
+    ARIMA = ARIMA(Total_Sales)
+  )
+
+# Accuracy
+glance(model_compare)
+
+# Forecast with both
+combined_forecast <- forecast(model_compare, h = 12)
+
+# Plot comparison
+autoplot(combined_forecast, df_UK_ts) +
+  labs(title = "ETS vs ARIMA Forecast", y = "Total Sales")
+```
+
+
+```{r Evaluate Forecast Accuracy}
+# Create training set (excluding last 6 months for testing)
+train_data <- df_UK_ts %>% filter_index(. ~ "2011-06")
+
+# Train and test
+model_train <- train_data %>%
+  model(ETS = ETS(Total_Sales), ARIMA = ARIMA(Total_Sales))
+
+# Forecast
+fc <- forecast(model_train, h = 6)
+
+# Actual data
+actual <- df_UK_ts %>% filter_index("2011-07" ~ .)
+
+# Accuracy
+accuracy(fc, actual)
+```
+
+> Team Contribution
+
+Madhumathi Sekar: Time series decomposition, time series visualization, TS models
+Thy Kieu: Description of graphs and time series models, time series visualization
+Madhuri Patibandla: Predictions
+
+
+
+
+
+
+
+
+
+
+
+
